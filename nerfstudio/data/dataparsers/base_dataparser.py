@@ -91,6 +91,35 @@ class DataparserOutputs:
 
 
 @dataclass
+class RGBDDataparserOutputs:
+    """Dataparser outputs for the which will be used by the DataManager
+    for creating RayBundle and RayGT objects."""
+
+    image_filenames: List[Path]
+    """Filenames for the images."""
+    depth_filenames: List[Path]
+    color_cameras: Cameras
+    """Camera object storing collection of camera information in dataset."""
+    # depth_cameras: Cameras
+    alpha_color: Optional[TensorType[3]] = None
+    """Color of dataset background."""
+    scene_box: SceneBox = SceneBox()
+    """Scene box of dataset. Used to bound the scene or provide the scene scale depending on model."""
+    mask_filenames: Optional[List[Path]] = None
+    """Filenames for any masks that are required"""
+    metadata: Dict[str, Any] = to_immutable_dict({})
+    """Dictionary of any metadata that be required for the given experiment.
+    Will be processed by the InputDataset to create any additional tensors that may be required.
+    """
+
+    def as_dict(self) -> dict:
+        """Returns the dataclass as a dictionary."""
+        return vars(self)
+
+    def save_dataparser_transform(self, path: Path):
+        pass
+
+@dataclass
 class DataParserConfig(cfg.InstantiateConfig):
     """Basic dataset config"""
 

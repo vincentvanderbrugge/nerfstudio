@@ -1,3 +1,14 @@
+.idea
+dataprep/*
+/dataprep/data/
+!dataprep/depth_align.py
+!dataprep/dataprep.py
+!dataprep/__init__.py
+/scripts/data
+/tests/data
+/scratch
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -184,3 +195,4 @@ bash/
 cache/
 package-lock.json
 camera_paths/
+/scripts/data/

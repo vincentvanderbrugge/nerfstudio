@@ -26,7 +26,7 @@ from nerfacc import ContractionType
 from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.configs.base_config import TrainerConfig, ViewerConfig
 from nerfstudio.configs.experiment_config import ExperimentConfig
-from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManagerConfig
+from nerfstudio.data.datamanagers.base_datamanager import VanillaDataManagerConfig, RGBDDataManagerConfig
 from nerfstudio.data.datamanagers.semantic_datamanager import SemanticDataManagerConfig
 from nerfstudio.data.datamanagers.variable_res_datamanager import (
     VariableResDataManagerConfig,
@@ -41,6 +41,8 @@ from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataPars
 from nerfstudio.data.dataparsers.phototourism_dataparser import (
     PhototourismDataParserConfig,
 )
+from nerfstudio.data.dataparsers.twelve_scenes_dataparser import TwelveScenesDataParserConfig
+from nerfstudio.data.dataparsers.twelve_scenes_rgbd_dataparser import TwelveScenesRGBDDataParserConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig
 from nerfstudio.engine.schedulers import SchedulerConfig
 from nerfstudio.field_components.temporal_distortions import TemporalDistortionKind
@@ -50,6 +52,8 @@ from nerfstudio.models.nerfacto import NerfactoModelConfig
 from nerfstudio.models.semantic_nerfw import SemanticNerfWModelConfig
 from nerfstudio.models.tensorf import TensoRFModelConfig
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
+from nerfstudio.models.vanilla_nerf_rgbd import RGBDNeRFModel, RGBDVanillaModelConfig
+from nerfstudio.models.freespace_rgbd import RGBDFreespaceModel, RGBDFreespaceModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 
@@ -279,6 +283,46 @@ method_configs["phototourism"] = ExperimentConfig(
     },
     viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
     vis="viewer",
+)
+
+method_configs["vanilla-nerf-rgbd"] = ExperimentConfig(
+    method_name="vanilla-nerf-rgbd",
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+        ),
+        model=RGBDVanillaModelConfig(_target=RGBDNeRFModel),
+    ),
+    optimizers={
+        "fields": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+        "temporal_distortion": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+    },
+)
+
+method_configs["freespace-rgbd"] = ExperimentConfig(
+    method_name="freespace-rgbd",
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+        ),
+        model=RGBDFreespaceModelConfig(_target=RGBDFreespaceModel),
+    ),
+    optimizers={
+        "fields": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+        "temporal_distortion": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+    },
 )
 
 AnnotatedBaseConfigUnion = tyro.conf.SuppressFixed[  # Don't show unparseable (fixed) arguments in helptext.

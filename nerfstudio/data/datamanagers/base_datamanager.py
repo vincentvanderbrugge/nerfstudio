@@ -48,7 +48,10 @@ from nerfstudio.data.dataparsers.nuscenes_dataparser import NuScenesDataParserCo
 from nerfstudio.data.dataparsers.phototourism_dataparser import (
     PhototourismDataParserConfig,
 )
+from nerfstudio.data.dataparsers.twelve_scenes_dataparser import TwelveScenesDataParserConfig
+from nerfstudio.data.dataparsers.twelve_scenes_rgbd_dataparser import TwelveScenesRGBDDataParserConfig
 from nerfstudio.data.datasets.base_dataset import InputDataset
+from nerfstudio.data.datasets.rgbd_dataset import RGBDInputDataset
 from nerfstudio.data.pixel_samplers import EquirectangularPixelSampler, PixelSampler
 from nerfstudio.data.utils.dataloaders import (
     CacheDataloader,
@@ -73,6 +76,8 @@ AnnotatedDataParserUnion = tyro.conf.OmitSubcommandPrefixes[  # Omit prefixes of
             "nuscenes-data": NuScenesDataParserConfig(),
             "dnerf-data": DNeRFDataParserConfig(),
             "phototourism-data": PhototourismDataParserConfig(),
+            "twelve_scenes-data": TwelveScenesDataParserConfig(),
+            "twelve_scenes_rgbd-data": TwelveScenesRGBDDataParserConfig()
         },
         prefix_names=False,  # Omit prefixes in subcommands themselves.
     )
@@ -444,3 +449,30 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             assert len(camera_opt_params) == 0
 
         return param_groups
+
+
+@dataclass
+class RGBDDataManagerConfig(VanillaDataManagerConfig):
+    """Configuration for data manager instantiation; DataManager is in charge of keeping the train/eval dataparsers;
+    After instantiation, data manager holds both train/eval datasets and is in charge of returning unpacked
+    train/eval data at each iteration
+    """
+
+    _target: Type = field(default_factory=lambda: RGBDDataManager)
+
+
+class RGBDDataManager(VanillaDataManager):
+
+    def create_train_dataset(self) -> RGBDInputDataset:
+        """Sets up the data loaders for training"""
+        return RGBDInputDataset(
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split="train"),
+            scale_factor=self.config.camera_res_scale_factor,
+        )
+
+    def create_eval_dataset(self) -> RGBDInputDataset:
+        """Sets up the data loaders for evaluation"""
+        return RGBDInputDataset(
+            dataparser_outputs=self.dataparser.get_dataparser_outputs(split=self.test_split),
+            scale_factor=self.config.camera_res_scale_factor,
+        )
