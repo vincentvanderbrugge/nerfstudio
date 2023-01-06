@@ -28,6 +28,7 @@ from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal
+import matplotlib.pyplot as plt
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.engine.callbacks import (
@@ -60,10 +61,10 @@ from nerfstudio.utils import colormaps
 
 
 @dataclass
-class NerfactoModelConfig(ModelConfig):
+class NerfactoFreespaceModelConfig(ModelConfig):
     """Nerfacto Model Config"""
 
-    _target: Type = field(default_factory=lambda: NerfactoModel)
+    _target: Type = field(default_factory=lambda: NerfactoFreespaceModel)
     near_plane: float = 0.05
     """How far along the ray to start sampling."""
     far_plane: float = 1000.0
@@ -103,6 +104,8 @@ class NerfactoModelConfig(ModelConfig):
     """Orientation loss multipier on computed noramls."""
     pred_normal_loss_mult: float = 0.001
     """Predicted normal loss multiplier."""
+    freespace_loss_mult: float = 1
+    """Depth loss multiplier."""
     use_proposal_weight_anneal: bool = True
     """Whether to use proposal weight annealing."""
     use_average_appearance_embedding: bool = True
@@ -117,14 +120,14 @@ class NerfactoModelConfig(ModelConfig):
     """Whether to predict normals or not."""
 
 
-class NerfactoModel(Model):
+class NerfactoFreespaceModel(Model):
     """Nerfacto model
 
     Args:
         config: Nerfacto configuration to instantiate model
     """
 
-    config: NerfactoModelConfig
+    config: NerfactoFreespaceModelConfig
 
     def populate_modules(self):
         """Set the fields and modules."""
@@ -190,6 +193,7 @@ class NerfactoModel(Model):
 
         # losses
         self.rgb_loss = MSELoss()
+        self.freespace_loss = L1Loss()
 
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -243,11 +247,14 @@ class NerfactoModel(Model):
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
         depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
+        steps = (ray_samples.frustums.starts + ray_samples.frustums.ends)/2
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            "weights": weights,
+            "steps": steps,
         }
 
         if self.config.predict_normals:
@@ -282,12 +289,47 @@ class NerfactoModel(Model):
         if self.training:
             metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
 
+        # Depth error
+        depth = batch["depth"].to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_error = L1Loss()(outputs["depth"][:, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_error"] = depth_error
+
         return metrics_dict
+
+    def get_freespace_loss(self, ground_truth_depth, steps, weights):
+
+        distance_to_first_surface = torch.clip(ground_truth_depth[:, None, None] - steps, 0)
+        not_nan_filter = ~torch.isnan(distance_to_first_surface)
+        distance_to_first_surface = distance_to_first_surface[not_nan_filter]
+        weights = weights[not_nan_filter]
+        free_space_loss = self.freespace_loss(torch.mul(distance_to_first_surface, weights),
+                                          torch.zeros_like(distance_to_first_surface))
+        return free_space_loss
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         loss_dict = {}
         image = batch["image"].to(self.device)
         loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
+
+        # Free space loss calculation (density in free space is punished)
+        depth = batch["depth"].to(self.device)
+        freespace_loss = self.get_freespace_loss(depth, outputs['steps'], outputs['weights'])
+        loss_dict["freespace_loss"] = self.config.freespace_loss_mult * freespace_loss
+        not_nan_filter = ~torch.isnan(depth)
+        deptho = outputs["depth"][:, 0]
+        # depth_loss = L1Loss()(outputs["depth"][:, 0][not_nan_filter],
+        #                                   depth[not_nan_filter])
+
+        # # Debugging
+        # depth = depth[not_nan_filter]
+        # depth_median = outputs["depth"][:, 0][not_nan_filter]
+        # depth_expected = outputs["depth_expected"][:, 0][not_nan_filter]
+        # error_depth_median = L1Loss()(depth_median, depth)
+        # error_depth_expected = L1Loss()(depth_expected, depth)
+        # ambiguity = L1Loss()(depth_median, depth_expected)
+
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
                 outputs["weights_list"], outputs["ray_samples_list"]
@@ -322,6 +364,16 @@ class NerfactoModel(Model):
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
 
+        # # Debugging
+        # _depth_gt = batch["depth"]
+        # _depth_median = np.array(outputs["depth"][:, :, 0].cpu().detach())
+        # _depth_expected = np.array(outputs["depth_expected"][:, :, 0].cpu().detach())
+        # not_nan_filter = ~np.isnan(_depth_gt)
+        # _ambiguity = L1Loss()(torch.tensor(_depth_median[not_nan_filter]),
+        #                       torch.tensor(_depth_expected[not_nan_filter]))
+        # _combined_depth = np.concatenate((_depth_expected, _depth_median, _depth_gt), axis=1)
+        # _img = np.array(outputs["depth"][:, :, 0].cpu().detach())
+        # _img_gt = np.array(batch["image"].cpu().detach())
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
         rgb = torch.moveaxis(rgb, -1, 0)[None, ...]
@@ -333,6 +385,13 @@ class NerfactoModel(Model):
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
+
+        # Depth error
+        depth = torch.tensor(batch["depth"]).to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_error = L1Loss()(outputs["depth"][:, :, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_error"] = depth_error
 
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
 

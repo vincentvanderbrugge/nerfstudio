@@ -52,8 +52,12 @@ from nerfstudio.models.nerfacto import NerfactoModelConfig
 from nerfstudio.models.semantic_nerfw import SemanticNerfWModelConfig
 from nerfstudio.models.tensorf import TensoRFModelConfig
 from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
-from nerfstudio.models.vanilla_nerf_rgbd import RGBDNeRFModel, RGBDVanillaModelConfig
-from nerfstudio.models.freespace_rgbd import RGBDFreespaceModel, RGBDFreespaceModelConfig
+from nerfstudio.models.vanilla_nerf_depth_tracking import NeRFTrackingModel, VanillaTrackingModelConfig
+from nerfstudio.models.vanilla_nerf_L1 import RGBDNeRFModel, RGBDVanillaModelConfig
+from nerfstudio.models.vanilla_nerf_freespace import RGBDFreespaceModel, RGBDFreespaceModelConfig
+from nerfstudio.models.nerfacto_freespace import NerfactoFreespaceModel, NerfactoFreespaceModelConfig
+from nerfstudio.models.nerfacto_L1 import NerfactoL1Model, NerfactoL1ModelConfig
+from nerfstudio.models.nerfacto_depth_tracking import NerfactoTrackingModel, NerfactoTrackingModelConfig
 from nerfstudio.pipelines.base_pipeline import VanillaPipelineConfig
 from nerfstudio.pipelines.dynamic_batch import DynamicBatchPipelineConfig
 
@@ -285,8 +289,8 @@ method_configs["phototourism"] = ExperimentConfig(
     vis="viewer",
 )
 
-method_configs["vanilla-nerf-rgbd"] = ExperimentConfig(
-    method_name="vanilla-nerf-rgbd",
+method_configs["vanilla-nerf-L1"] = ExperimentConfig(
+    method_name="vanilla-nerf-L1",
     pipeline=VanillaPipelineConfig(
         datamanager=RGBDDataManagerConfig(
             dataparser=TwelveScenesRGBDDataParserConfig(),
@@ -305,8 +309,8 @@ method_configs["vanilla-nerf-rgbd"] = ExperimentConfig(
     },
 )
 
-method_configs["freespace-rgbd"] = ExperimentConfig(
-    method_name="freespace-rgbd",
+method_configs["vanilla-nerf-freespace"] = ExperimentConfig(
+    method_name="vanilla-nerf-freespace",
     pipeline=VanillaPipelineConfig(
         datamanager=RGBDDataManagerConfig(
             dataparser=TwelveScenesRGBDDataParserConfig(),
@@ -323,6 +327,116 @@ method_configs["freespace-rgbd"] = ExperimentConfig(
             "scheduler": None,
         },
     },
+)
+
+method_configs["vanilla-nerf-tracking"] = ExperimentConfig(
+    method_name="vanilla-nerf-tracking",
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+        ),
+        model=VanillaTrackingModelConfig(_target=NeRFTrackingModel),
+    ),
+    optimizers={
+        "fields": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+        "temporal_distortion": {
+            "optimizer": RAdamOptimizerConfig(lr=5e-4, eps=1e-08),
+            "scheduler": None,
+        },
+    },
+)
+
+method_configs["nerfacto-freespace"] = ExperimentConfig(
+    method_name="nerfacto-freespace",
+    trainer=TrainerConfig(
+        steps_per_eval_batch=500, steps_per_save=2000, max_num_iterations=30000, mixed_precision=True
+    ),
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+            train_num_rays_per_batch=4096,
+            eval_num_rays_per_batch=4096,
+            camera_optimizer=CameraOptimizerConfig(
+                mode="SO3xR3", optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2)
+            ),
+        ),
+        model=NerfactoFreespaceModelConfig(eval_num_rays_per_chunk=1 << 15),
+    ),
+    optimizers={
+        "proposal_networks": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+    },
+    viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+    vis="viewer",
+)
+
+method_configs["nerfacto-L1"] = ExperimentConfig(
+    method_name="nerfacto-L1",
+    trainer=TrainerConfig(
+        steps_per_eval_batch=500, steps_per_save=2000, max_num_iterations=30000, mixed_precision=True
+    ),
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+            train_num_rays_per_batch=4096,
+            eval_num_rays_per_batch=4096,
+            camera_optimizer=CameraOptimizerConfig(
+                mode="SO3xR3", optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2)
+            ),
+        ),
+        model=NerfactoL1ModelConfig(eval_num_rays_per_chunk=1 << 15),
+    ),
+    optimizers={
+        "proposal_networks": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+    },
+    viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+    vis="viewer",
+)
+
+method_configs["nerfacto-tracking"] = ExperimentConfig(
+    method_name="nerfacto-tracking",
+    trainer=TrainerConfig(
+        steps_per_eval_batch=500, steps_per_save=2000, max_num_iterations=30000, mixed_precision=True
+    ),
+    pipeline=VanillaPipelineConfig(
+        datamanager=RGBDDataManagerConfig(
+            dataparser=TwelveScenesRGBDDataParserConfig(),
+            train_num_rays_per_batch=4096,
+            eval_num_rays_per_batch=4096,
+            camera_optimizer=CameraOptimizerConfig(
+                mode="SO3xR3", optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2)
+            ),
+        ),
+        model=NerfactoTrackingModelConfig(eval_num_rays_per_chunk=1 << 15),
+    ),
+    optimizers={
+        "proposal_networks": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+        "fields": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": None,
+        },
+    },
+    viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+    vis="viewer",
 )
 
 AnnotatedBaseConfigUnion = tyro.conf.SuppressFixed[  # Don't show unparseable (fixed) arguments in helptext.

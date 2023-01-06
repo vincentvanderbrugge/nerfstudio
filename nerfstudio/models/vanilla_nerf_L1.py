@@ -190,3 +190,68 @@ class RGBDNeRFModel(NeRFModel):
                      "depth_loss_fine": self.config.depth_loss_mult * depth_loss_fine}
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
         return loss_dict
+
+    def get_metrics_dict(self, outputs, batch):
+        metrics_dict = {}
+
+        # Depth loss
+        depth = batch["depth"].to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_loss = L1Loss()(outputs["depth_fine"][:, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_loss"] = depth_loss
+
+        return metrics_dict
+
+    def get_image_metrics_and_images(
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+    ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        image = batch["image"].to(outputs["rgb_coarse"].device)
+        rgb_coarse = outputs["rgb_coarse"]
+        rgb_fine = outputs["rgb_fine"]
+        acc_coarse = colormaps.apply_colormap(outputs["accumulation_coarse"])
+        acc_fine = colormaps.apply_colormap(outputs["accumulation_fine"])
+        depth_coarse = colormaps.apply_depth_colormap(
+            outputs["depth_coarse"],
+            accumulation=outputs["accumulation_coarse"],
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
+        )
+        depth_fine = colormaps.apply_depth_colormap(
+            outputs["depth_fine"],
+            accumulation=outputs["accumulation_fine"],
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
+        )
+
+        combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
+        combined_acc = torch.cat([acc_coarse, acc_fine], dim=1)
+        combined_depth = torch.cat([depth_coarse, depth_fine], dim=1)
+
+        # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
+        image = torch.moveaxis(image, -1, 0)[None, ...]
+        rgb_coarse = torch.moveaxis(rgb_coarse, -1, 0)[None, ...]
+        rgb_fine = torch.moveaxis(rgb_fine, -1, 0)[None, ...]
+
+        coarse_psnr = self.psnr(image, rgb_coarse)
+        fine_psnr = self.psnr(image, rgb_fine)
+        fine_ssim = self.ssim(image, rgb_fine)
+        fine_lpips = self.lpips(image, rgb_fine)
+
+        metrics_dict = {
+            "psnr": float(fine_psnr.item()),
+            "coarse_psnr": float(coarse_psnr),
+            "fine_psnr": float(fine_psnr),
+            "fine_ssim": float(fine_ssim),
+            "fine_lpips": float(fine_lpips),
+        }
+
+        # Depth loss
+        depth = torch.tensor(batch["depth"]).to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_loss = L1Loss()(outputs["depth_fine"][:, :, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_error"] = depth_loss
+
+        images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
+        return metrics_dict, images_dict

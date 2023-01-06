@@ -29,7 +29,7 @@ class RGBDInputDataset(Dataset):
         self.scale_factor = scale_factor
         self.scene_box = deepcopy(dataparser_outputs.scene_box)
         self.metadata = deepcopy(dataparser_outputs.metadata)
-        self.cameras = deepcopy(dataparser_outputs.color_cameras)
+        self.cameras = deepcopy(dataparser_outputs.cameras)
         self.cameras.rescale_output_resolution(scaling_factor=scale_factor)
 
     def __len__(self):

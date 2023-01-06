@@ -136,10 +136,10 @@ class TwelveScenesRGBD(DataParser):
 
         # Scale poses
         scale_factor = 1.0
-        if self.config.auto_scale_poses:
-            scale_factor /= torch.max(torch.abs(poses[:, :3, 3]))
+        # if self.config.auto_scale_poses:
+        #     scale_factor /= torch.max(torch.abs(poses[:, :3, 3]))
 
-        poses[:, :3, 3] *= scale_factor * self.config.scale_factor
+        # poses[:, :3, 3] *= scale_factor * self.config.scale_factor
 
         # Choose image_filenames and poses based on split, but after auto orient and scaling the poses.
         image_filenames = [image_filenames[i] for i in indices]
@@ -228,7 +228,7 @@ class TwelveScenesRGBD(DataParser):
         dataparser_outputs = RGBDDataparserOutputs(
             image_filenames=image_filenames,
             depth_filenames=depth_filenames,
-            color_cameras=color_cameras,
+            cameras=color_cameras,
             # depth_cameras=depth_cameras,
             scene_box=scene_box,
             mask_filenames=mask_filenames if len(mask_filenames) > 0 else None,

@@ -19,7 +19,7 @@ Implementation of vanilla nerf.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple, Type
+from typing import Any, Dict, List, Tuple, Type, Optional
 
 import torch
 from torch.nn import Parameter
@@ -40,27 +40,26 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
 )
-from nerfstudio.models.base_model import Model, ModelConfig
+from nerfstudio.models.vanilla_nerf import NeRFModel, VanillaModelConfig
 from nerfstudio.utils import colormaps, colors, misc
 
 
 @dataclass
-class VanillaModelConfig(ModelConfig):
-    """Vanilla Model Config"""
+class RGBDFreespaceModelConfig(VanillaModelConfig):
+    """RGBD NeRF with Freespace Loss Model Config"""
 
-    _target: Type = field(default_factory=lambda: NeRFModel)
-    num_coarse_samples: int = 64
-    """Number of samples in coarse field evaluation"""
-    num_importance_samples: int = 128
-    """Number of samples in fine field evaluation"""
+    _target: Type = field(default_factory=lambda: RGBDFreespaceModel)
 
-    enable_temporal_distortion: bool = False
-    """Specifies whether or not to include ray warping based on time."""
-    temporal_distortion_params: Dict[str, Any] = to_immutable_dict({"kind": TemporalDistortionKind.DNERF})
-    """Parameters to instantiate temporal distortion with"""
+    rgb_loss_mult: float = 1.0
+    """RGB loss multiplier."""
+    freespace_loss_mult: float = 1.0
+    """Depth loss multiplier."""
+
+    collider_params: Optional[Dict[str, float]] = to_immutable_dict({"near_plane": 0.1, "far_plane": 6})
+    """parameters to instantiate scene collider with"""
 
 
-class NeRFModel(Model):
+class RGBDFreespaceModel(NeRFModel):
     """Vanilla NeRF model
 
     Args:
@@ -69,7 +68,7 @@ class NeRFModel(Model):
 
     def __init__(
         self,
-        config: VanillaModelConfig,
+        config: RGBDFreespaceModelConfig,
         **kwargs,
     ) -> None:
         self.field_coarse = None
@@ -110,10 +109,11 @@ class NeRFModel(Model):
         # renderers
         self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
         self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer()
+        self.renderer_depth = DepthRenderer(method='expected')
 
         # losses
         self.rgb_loss = MSELoss()
+        self.freespace_loss = L1Loss()
 
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
@@ -124,15 +124,6 @@ class NeRFModel(Model):
             params = self.config.temporal_distortion_params
             kind = params.pop("kind")
             self.temporal_distortion = kind.to_temporal_distortion(params)
-
-    def get_param_groups(self) -> Dict[str, List[Parameter]]:
-        param_groups = {}
-        if self.field_coarse is None or self.field_fine is None:
-            raise ValueError("populate_fields() must be called before get_param_groups")
-        param_groups["fields"] = list(self.field_coarse.parameters()) + list(self.field_fine.parameters())
-        if self.temporal_distortion is not None:
-            param_groups["temporal_distortion"] = list(self.temporal_distortion.parameters())
-        return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
 
@@ -178,23 +169,54 @@ class NeRFModel(Model):
             "accumulation_fine": accumulation_fine,
             "depth_coarse": depth_coarse,
             "depth_fine": depth_fine,
+            "steps_fine": (ray_samples_pdf.frustums.starts + ray_samples_pdf.frustums.ends)/2,
+            "weights_fine": weights_fine
         }
         return outputs
+
+    def get_freespace_loss(self, ground_truth_depth, steps, weights):
+
+        distance_to_first_surface = torch.clip(ground_truth_depth[:, None, None] - steps, 0)
+        not_nan_filter = ~torch.isnan(distance_to_first_surface)
+        distance_to_first_surface = distance_to_first_surface[not_nan_filter]
+        weights = weights[not_nan_filter]
+        free_space_loss = self.freespace_loss(torch.mul(distance_to_first_surface, weights),
+                                          torch.zeros_like(distance_to_first_surface))
+        return free_space_loss
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         # Scaling metrics by coefficients to create the losses.
         device = outputs["rgb_coarse"].device
         image = batch["image"].to(device)
+        depth = batch["depth"].to(self.device)
+        # depth = depth.type(torch.float32)
 
         rgb_loss_coarse = self.rgb_loss(image, outputs["rgb_coarse"])
         rgb_loss_fine = self.rgb_loss(image, outputs["rgb_fine"])
 
-        loss_dict = {"rgb_loss_coarse": rgb_loss_coarse, "rgb_loss_fine": rgb_loss_fine}
+        # Free space loss calculation (density in free space is punished)
+        depth_loss_fine = self.get_freespace_loss(depth, outputs['steps_fine'], outputs['weights_fine'])
+
+        loss_dict = {"rgb_loss_coarse": self.config.rgb_loss_mult * rgb_loss_coarse,
+                     "rgb_loss_fine": self.config.rgb_loss_mult * rgb_loss_fine,
+                     "depth_loss_fine": self.config.freespace_loss_mult * depth_loss_fine}
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
         return loss_dict
 
+    def get_metrics_dict(self, outputs, batch):
+        metrics_dict = {}
+
+        # Depth loss
+        depth = batch["depth"].to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_loss = L1Loss()(outputs["depth_fine"][:, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_loss"] = depth_loss
+
+        return metrics_dict
+
     def get_image_metrics_and_images(
-            self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         image = batch["image"].to(outputs["rgb_coarse"].device)
         rgb_coarse = outputs["rgb_coarse"]
@@ -204,14 +226,14 @@ class NeRFModel(Model):
         depth_coarse = colormaps.apply_depth_colormap(
             outputs["depth_coarse"],
             accumulation=outputs["accumulation_coarse"],
-            near_plane=self.config.nearplane,
-            far_plane=self.config.farplane,
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
         )
         depth_fine = colormaps.apply_depth_colormap(
             outputs["depth_fine"],
             accumulation=outputs["accumulation_fine"],
-            near_plane=self.config.nearplane,
-            far_plane=self.config.farplane,
+            near_plane=self.config.collider_params["near_plane"],
+            far_plane=self.config.collider_params["far_plane"],
         )
 
         combined_rgb = torch.cat([image, rgb_coarse, rgb_fine], dim=1)
@@ -235,5 +257,13 @@ class NeRFModel(Model):
             "fine_ssim": float(fine_ssim),
             "fine_lpips": float(fine_lpips),
         }
+
+        # Depth error
+        depth = torch.tensor(batch["depth"]).to(self.device)
+        not_nan_filter = ~torch.isnan(depth)
+        depth_loss = L1Loss()(outputs["depth_fine"][:, :, 0][not_nan_filter],
+                              depth[not_nan_filter])
+        metrics_dict["depth_error"] = depth_loss
+
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
         return metrics_dict, images_dict

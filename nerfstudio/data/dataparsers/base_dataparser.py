@@ -98,7 +98,7 @@ class RGBDDataparserOutputs:
     image_filenames: List[Path]
     """Filenames for the images."""
     depth_filenames: List[Path]
-    color_cameras: Cameras
+    cameras: Cameras
     """Camera object storing collection of camera information in dataset."""
     # depth_cameras: Cameras
     alpha_color: Optional[TensorType[3]] = None
